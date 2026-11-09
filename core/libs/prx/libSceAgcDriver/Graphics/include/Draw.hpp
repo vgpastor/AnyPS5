@@ -89,6 +89,7 @@ std::array<std::uint32_t, 4> MeshIndexBufferDescriptor(const Pm4::DrawParameters
 inline constexpr std::uint64_t MeshComputeOutputLimitBytes = 256ull << 20u;
 bool MeshDrawRunsAsCompute(bool meshShader, bool forceMeshCompute, const State& state);
 bool MeshDrawRunsAsCompute(const Context& context, const State& state);
+const ShaderRecompiler::RecompileResult& CachedMeshReadback(const ShaderRecompiler::RecompileResult& mesh);
 std::vector<CompiledShader> MeshComputeStages(const Context& context, const State& state, std::span<const CompiledShader> shaders);
 
 struct MeshArguments {
