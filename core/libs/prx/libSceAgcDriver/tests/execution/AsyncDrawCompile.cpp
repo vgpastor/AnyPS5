@@ -9,13 +9,74 @@
 #include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 namespace {
 
 using AgcDriver::Graphics::Require;
+
+struct BackgroundWaitTestJob {
+    std::mutex mutex;
+    bool finished = false;
+    bool waited = false;
+
+    bool Await() {
+        return AgcDriver::DriverDetail::AwaitBackgroundJob(mutex, finished, waited);
+    }
+
+    bool WaitForAttempt(std::chrono::steady_clock::time_point deadline) {
+        do {
+            {
+                std::lock_guard lock(mutex);
+                if (waited) return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    void Finish() {
+        std::lock_guard lock(mutex);
+        finished = true;
+    }
+};
+
+void CheckBackgroundWaitBudget() {
+    using AgcDriver::DriverDetail::BackgroundWaitScope;
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    BackgroundWaitTestJob first;
+    BackgroundWaitTestJob second;
+    BackgroundWaitTestJob denied;
+    BackgroundWaitTestJob reused;
+    const auto worker = [](BackgroundWaitTestJob& job) {
+        const BackgroundWaitScope dispatch;
+        job.Await();
+    };
+    std::jthread firstWorker([&] { worker(first); });
+    std::jthread secondWorker([&] { worker(second); });
+    const auto entering = Clock::now() + 500ms;
+    Require(first.WaitForAttempt(entering) && second.WaitForAttempt(entering), "both jobs must attempt to reserve background wait budget");
+
+    const auto awaitWithCompletion = [](BackgroundWaitTestJob& job) {
+        std::jthread complete([&] {
+            if (job.WaitForAttempt(Clock::now() + 500ms)) job.Finish();
+        });
+        return job.Await();
+    };
+    const BackgroundWaitScope dispatch;
+    const bool acceptedWithoutBudget = awaitWithCompletion(denied);
+    first.Finish();
+    firstWorker.join();
+    const bool acceptedAfterRelease = awaitWithCompletion(reused);
+    second.Finish();
+    Require(!acceptedWithoutBudget, "concurrent waits must reserve the available background wait budget");
+    Require(acceptedAfterRelease, "a job that completes early must release unused background wait budget");
+}
 
 alignas(256) constexpr std::array<std::uint32_t, 7> Code{0xd7460000u, 0x04010c04u, 0x7e0202ffu, 0x12345678u, 0xe0702000u, 0x80000100u, 0xbf810000u};
 constexpr std::uint32_t StoredFormat = 0x00014204u;
@@ -75,8 +136,13 @@ void CheckFailedBuildAhead() {
     Require(device->ComputePipelineAhead(abandoned) == Ahead::Unavailable, "an abandoned build ahead left its compute pipeline queued");
 }
 
-int main() {
+int main(int argc, char** argv) {
+    const bool budget = argc == 2 && std::string_view(argv[1]) == "budget";
     try {
+        if (budget) {
+            CheckBackgroundWaitBudget();
+            return 0;
+        }
         CheckFailedBuildAhead();
         {
             const auto device = OpenVulkanTestDevice();
@@ -109,7 +175,7 @@ int main() {
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
-        AgcDriverShutdown_nid_postfix();
+        if (!budget) AgcDriverShutdown_nid_postfix();
         return 1;
     }
 }

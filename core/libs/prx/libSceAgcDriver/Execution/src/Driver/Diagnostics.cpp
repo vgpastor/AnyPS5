@@ -131,6 +131,7 @@ struct BackgroundWaitBudget {
     std::mutex mutex;
     std::chrono::steady_clock::time_point windowStart{};
     std::chrono::steady_clock::duration spent{};
+    std::chrono::steady_clock::duration reserved{};
 };
 
 BackgroundWaitBudget& backgroundWaitBudget() {
@@ -142,19 +143,24 @@ constexpr auto BackgroundWaitWindow = std::chrono::seconds(10);
 
 std::chrono::steady_clock::duration takeBackgroundWait() {
     auto& budget = backgroundWaitBudget();
-    const auto now = std::chrono::steady_clock::now();
     std::lock_guard lock(budget.mutex);
+    const auto now = std::chrono::steady_clock::now();
     if (now - budget.windowStart >= BackgroundWaitWindow) {
         budget.windowStart = now;
         budget.spent = {};
     }
     const std::chrono::steady_clock::duration allowance = 2 * AsyncDispatchWait();
-    return budget.spent < allowance ? std::min<std::chrono::steady_clock::duration>(AsyncDispatchWait(), allowance - budget.spent) : std::chrono::steady_clock::duration{};
+    const auto remaining = allowance - budget.spent - budget.reserved;
+    if (remaining <= std::chrono::steady_clock::duration{}) return {};
+    const auto allowed = std::min<std::chrono::steady_clock::duration>(AsyncDispatchWait(), remaining);
+    budget.reserved += allowed;
+    return allowed;
 }
 
-void spendBackgroundWait(std::chrono::steady_clock::duration waited) {
+void spendBackgroundWait(std::chrono::steady_clock::duration allowed, std::chrono::steady_clock::duration waited) {
     auto& budget = backgroundWaitBudget();
     std::lock_guard lock(budget.mutex);
+    budget.reserved -= allowed;
     budget.spent += waited;
 }
 
@@ -179,13 +185,14 @@ BackgroundWaitScope::~BackgroundWaitScope() {
 }
 
 bool AwaitBackgroundJob(std::mutex& mutex, const bool& finished, bool& waited) {
+    std::chrono::steady_clock::duration allowed{};
     {
         std::lock_guard lock(mutex);
         if (finished) return true;
         if (waited || !HostThreadSlot<bool, BackgroundWaitTag>::Get() || AsyncDispatchWait().count() <= 0) return false;
+        allowed = takeBackgroundWait();
         waited = true;
     }
-    const auto allowed = takeBackgroundWait();
     if (allowed <= std::chrono::steady_clock::duration{}) return false;
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + allowed;
@@ -198,7 +205,7 @@ bool AwaitBackgroundJob(std::mutex& mutex, const bool& finished, bool& waited) {
         if (done || std::chrono::steady_clock::now() >= deadline) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    spendBackgroundWait(std::chrono::steady_clock::now() - start);
+    spendBackgroundWait(allowed, std::chrono::steady_clock::now() - start);
     return done;
 }
 
