@@ -204,7 +204,7 @@ bool Driver::admitDrawKey(std::uint64_t key, std::uint64_t shape) {
 }
 
 std::uint64_t Driver::decodeBytes(const DrawDecode& decode) {
-    const auto held = [](const auto& values) { return values.empty() ? std::uint64_t{0} : static_cast<std::uint64_t>(values.capacity() * sizeof(values[0])); };
+    const auto held = [](const auto& values) { return static_cast<std::uint64_t>(values.capacity() * sizeof(values[0])); };
     std::uint64_t bytes = sizeof(DrawDecode) + held(decode.programs) + held(decode.roles);
     for (const auto& program : decode.programs) bytes += held(program.userData);
     return bytes;

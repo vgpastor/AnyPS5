@@ -11,11 +11,22 @@
 #include <exception>
 #include <initializer_list>
 #include <iostream>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace AgcDriver::DriverDetail {
+
+struct DriverTestAccess {
+    static std::uint64_t DecodeBytes(const DrawDecode& decode) {
+        return Driver::decodeBytes(decode);
+    }
+};
+
+}
 
 namespace {
 
@@ -161,11 +172,32 @@ void DecodeChargedAndReleased() {
     Require(footprint.variantBytes <= AgcDriver::DriverDetail::Driver::DrawCacheBytes(), "the draw cache exceeds its byte budget after evicting for the decode charge");
 }
 
+void ReservedDecodeUserDataIsCharged() {
+    using namespace AgcDriver::DriverDetail;
+    DrawDecode decode{};
+    auto& program = decode.programs.emplace_back();
+    program.binary.stage = ShaderRecompiler::ShaderStage::Fragment;
+    program.snapshot = std::make_shared<ShaderSnapshot>();
+    const auto before = DriverTestAccess::DecodeBytes(decode);
+    const AgcDriver::QueueState queue{};
+    ReadUserWords(queue, program, true);
+    Require(program.userData.empty() && program.userData.capacity() > 0, "expected reserved storage for a shader with no user words");
+    const auto reserved = program.userData.capacity() * sizeof(std::uint32_t);
+    const auto after = DriverTestAccess::DecodeBytes(decode);
+    std::cout << "Draw decode bytes before and after reserving " << reserved << " bytes: " << before << ", " << after << '\n';
+    Require(after == before + reserved, "the draw decode charge must include empty reserved user-data storage");
+}
+
 }
 
 int main(int argc, char** argv) {
+    const auto test = argc == 2 ? std::string_view(argv[1]) : std::string_view{};
+    const bool reservedUserDataTest = test == "--decode-reserved-user-data";
     try {
-        const auto test = argc == 2 ? std::string_view(argv[1]) : std::string_view{};
+        if (reservedUserDataTest) {
+            ReservedDecodeUserDataIsCharged();
+            return 0;
+        }
         Require(argc == 1 || test == "--metadata-budget" || test == "--shared-result" || test == "--decode-budget", "unknown draw cache capacity test argument");
         {
             const auto device = OpenVulkanTestDevice();
@@ -179,7 +211,7 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
-        AgcDriverShutdown_nid_postfix();
+        if (!reservedUserDataTest) AgcDriverShutdown_nid_postfix();
         return 1;
     }
 }
