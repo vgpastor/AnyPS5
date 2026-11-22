@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import io
 import os
 from pathlib import Path
@@ -403,6 +404,33 @@ class PadInputTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
         self.assertIn("is a directory", errors.getvalue())
 
+
+    def run_with_windows_reader(self, sharing):
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                       ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        reader = kernel.CreateFileW(str(self.path), 0x80000000, sharing, None, 3, 0x80, None)
+        self.assertNotEqual(reader, ctypes.c_void_p(-1).value, ctypes.get_last_error())
+        try:
+            return subprocess.run([sys.executable, str(Path(pad_input.__file__)), str(self.path), "cross"],
+                                  capture_output=True, text=True, timeout=10)
+        finally:
+            kernel.CloseHandle(reader)
+
+    @unittest.skipUnless(os.name == "nt", "Windows command-file sharing")
+    def test_windows_read_denied_reports_a_cli_error_and_preserves_command(self):
+        original = b"2000 16384 300\n"
+        self.path.write_bytes(original)
+        result = self.run_with_windows_reader(0)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("error:", result.stderr)
+        self.assertIn(repr(str(self.path)), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
 
     def test_missing_output_directory_reports_a_cli_error(self):
         path = self.root / "missing" / "command"
