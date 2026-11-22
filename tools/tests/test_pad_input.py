@@ -432,6 +432,19 @@ class PadInputTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(list(self.root.iterdir()), [self.path])
 
+    @unittest.skipUnless(os.name == "nt", "Windows command-file sharing")
+    def test_windows_replace_denied_reports_a_cli_error_and_removes_temporary(self):
+        original = b"2000 16384 300\n"
+        self.path.write_bytes(original)
+        result = self.run_with_windows_reader(1)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("error:", result.stderr)
+        self.assertIn(repr(str(self.path)), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
+
     def test_missing_output_directory_reports_a_cli_error(self):
         path = self.root / "missing" / "command"
         result = subprocess.run([sys.executable, str(Path(pad_input.__file__)), str(path), "cross"],
